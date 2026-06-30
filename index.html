@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RV Gulf">
+<title>RV Gulf</title>
+<style>
+  :root{ --bg:#0f1726; --tile:#23314a; --on:#1f8a4c; --txt:#fff; --dim:#9fb0c9; }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{margin:0;background:var(--bg);font-family:-apple-system,system-ui,Roboto,sans-serif;color:var(--txt);padding:14px;padding-bottom:30px;}
+  header{display:flex;align-items:center;justify-content:space-between;margin:4px 4px 16px;}
+  h1{font-size:22px;margin:0;font-weight:700;}
+  .status{display:flex;align-items:center;gap:6px;font-size:12px;color:#5fd38d;}
+  .dot{width:9px;height:9px;border-radius:50%;background:#5fd38d;}
+  .dot.off{background:#e2554e;}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;}
+  .tile{background:var(--tile);border:none;border-radius:14px;padding:16px 12px;color:var(--dim);
+        text-align:left;cursor:pointer;transition:.1s;min-height:84px;display:flex;flex-direction:column;justify-content:space-between;}
+  .tile:active{transform:scale(.96);}
+  .tile.on{background:var(--on);color:var(--txt);box-shadow:0 0 0 2px rgba(95,211,141,.35);}
+  .tile .ico{font-size:24px;}
+  .tile .nm{font-size:15px;font-weight:600;line-height:1.15;}
+  .tile .st{font-size:12px;opacity:.85;margin-top:2px;}
+  .note{text-align:center;color:#5a6b85;font-size:11px;margin-top:18px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>RV Gulf</h1>
+  <div class="status"><span class="dot" id="conn"></span><span id="connTxt">Connecting</span></div>
+</header>
+<div class="grid" id="grid"></div>
+<div class="note">Tap to control · green = ON</div>
+
+<script>
+// ===== CONFIG =====
+// Board 1 (WiFi relay) is reached DIRECTLY over HTTP.
+// Board 2 (Modbus relay) is reached THROUGH the screen, which forwards to
+// Modbus. So Board 2's switches use the SCREEN's IP + the screen's object_ids.
+const BOARD1 = "http://192.168.0.223";   // Board 1 (WiFi relay)
+const SCREEN = "http://192.168.0.243";   // the 7B screen = hub for Board 2
+
+// type:
+//   "switch" = simple on/off (esphome /switch/<key>/turn_on|off, state via GET)
+//   "cycle"  = A/C-fan style: tap steps Off->Lo->Med->Hi->Off across 3 keys
+const SW = [
+  // ---- Board 1 (direct HTTP) ----
+  {nm:"Interior Light", ic:"💡", type:"switch", host:BOARD1, key:"relay_1"},
+  {nm:"Exterior Light", ic:"🔆", type:"switch", host:BOARD1, key:"relay_2"},
+  {nm:"Ambient Light",  ic:"🌙", type:"switch", host:BOARD1, key:"relay_3"},
+  {nm:"Shower Light",   ic:"🚿", type:"switch", host:BOARD1, key:"relay_4"},
+  {nm:"Water Pump",     ic:"💧", type:"switch", host:BOARD1, key:"relay_5"},
+  {nm:"Inverter",       ic:"🔌", type:"switch", host:BOARD1, key:"relay_6"},
+  {nm:"Cabin Heater",   ic:"🔥", type:"switch", host:BOARD1, key:"relay_7"},
+  {nm:"Warm Water",     ic:"🚰", type:"switch", host:BOARD1, key:"relay_8"},
+  // ---- Board 2 (through the screen) ----
+  // A/C Fan = ONE cycle tile over 3 screen switches (Low/Med/High)
+  {nm:"A/C Fan", ic:"❄️", type:"cycle", host:SCREEN,
+     keys:["b2_a___c_fan_low","b2_a___c_fan_med","b2_a___c_fan_high"],
+     labels:["OFF","SLOW","MED","HIGH"]},
+  // Warm Wind = ONE cycle tile over 3 screen switches (Low/Med/High)
+  {nm:"Warm Wind", ic:"♨️", type:"cycle", host:SCREEN,
+     keys:["b2_warm_wind_low","b2_warm_wind_med","b2_warm_wind_high"],
+     labels:["OFF","LOW","MED","HIGH"]},
+  {nm:"Drainage Valve", ic:"🚰", type:"switch", host:SCREEN, key:"b2_drainage_valve"},
+  {nm:"Awning",         ic:"⛺", type:"switch", host:SCREEN, key:"b2_awning"},
+];
+
+const grid = document.getElementById('grid');
+const tiles = SW.map((s,i)=>{
+  const b=document.createElement('button');
+  b.className='tile'; b.dataset.i=i;
+  b.innerHTML=`<div class="ico">${s.ic}</div><div><div class="nm">${s.nm}</div><div class="st">…</div></div>`;
+  b.onclick=()=>onTap(i);
+  grid.appendChild(b);
+  return b;
+});
+
+function url(host,key,path){ return host + "/switch/" + key + path; }
+function setTile(i,on,txt){
+  tiles[i].classList.toggle('on',on);
+  tiles[i].querySelector('.st').textContent = txt!==undefined ? txt : (on?'ON':'OFF');
+}
+
+async function onTap(i){
+  const s=SW[i];
+  if(s.type==='cycle'){
+    // advance step 0..3, turn on only the matching key (or none for Off)
+    s.step = ((s.step||0)+1) % 4;
+    const onKey = s.step===0 ? null : s.keys[s.step-1];
+    setTile(i, s.step!==0, s.labels[s.step]);
+    for(const k of s.keys){
+      const want = (k===onKey);
+      try{ await fetch(url(s.host,k, want?'/turn_on':'/turn_off'),{method:'POST'}); }catch(e){}
+    }
+  } else {
+    const on=tiles[i].classList.contains('on');
+    setTile(i,!on);
+    try{ await fetch(url(s.host,s.key, on?'/turn_off':'/turn_on'),{method:'POST'}); }
+    catch(e){ setTile(i,on); }
+  }
+}
+
+// poll states every 3s so the panel mirrors reality (incl. screen-made changes)
+async function refresh(){
+  let anyOk=false;
+  for(let i=0;i<SW.length;i++){
+    const s=SW[i];
+    try{
+      if(s.type==='cycle'){
+        // find which of the 3 keys is on -> set step + label
+        let step=0;
+        for(let j=0;j<s.keys.length;j++){
+          const r=await fetch(url(s.host,s.keys[j],""),{cache:'no-store'});
+          if(r.ok){ anyOk=true; const v=await r.json(); if(v.state==='ON'||v.value===true){ step=j+1; } }
+        }
+        s.step=step; setTile(i, step!==0, s.labels[step]);
+      } else {
+        const r=await fetch(url(s.host,s.key,""),{cache:'no-store'});
+        if(r.ok){ anyOk=true; const v=await r.json(); setTile(i, v.state==='ON'||v.value===true); }
+      }
+    }catch(e){}
+  }
+  document.getElementById('conn').className='dot'+(anyOk?'':' off');
+  document.getElementById('connTxt').textContent=anyOk?'Online':'Offline';
+}
+refresh(); setInterval(refresh,3000);
+</script>
+</body>
+</html>
